@@ -48,6 +48,7 @@ export interface DocumentRecord {
   date: string;
   ingested: string;
   excerpt: string;
+  summary?: string;
   excerptOriginal?: string;
   pages: number;
 }
@@ -209,42 +210,63 @@ const delay = <T,>(v: T, ms = 250) => new Promise<T>((r) => setTimeout(() => r(v
 
 export const api = {
   async getSystemHealth() {
-    return delay({
-      offline: true,
-      externalCalls: 0,
-      uptimeHours: 412,
-      indexSizeGB: 38.7,
-      lastIngestion: "2025-02-22T09:30:00Z",
-      services: [
-        { name: "Index", status: "ok" as const },
-        { name: "OCR", status: "ok" as const },
-        { name: "Embedding", status: "ok" as const },
-        { name: "Translator", status: "degraded" as const },
-      ],
-    });
+    const res = await fetch("http://localhost:8000/api/health");
+    return res.json();
   },
   async getCorpusStats() {
-    const langs = new Set(documents.map((d) => d.language));
-    return delay({
-      documents: 12_847,
-      languagesPresent: langs.size + 9,
-      lastIngestion: "2025-02-22T09:30:00Z",
-      newToday: 23,
-    });
+    const res = await fetch("http://localhost:8000/api/corpus-stats");
+    return res.json();
   },
-  async getDocuments() { return delay(documents); },
-  async getDocument(id: string) { return delay(documents.find((d) => d.id === id) ?? null); },
-  async getEntities() { return delay({ entities, edges }); },
-  async getCases() { return delay(cases); },
-  async getCase(id: string) { return delay(cases.find((c) => c.id === id) ?? null); },
+  async getDocuments() {
+    const res = await fetch("http://localhost:8000/api/documents");
+    return res.json();
+  },
+  async getDocument(id: string) {
+    const res = await fetch(`http://localhost:8000/api/documents/${id}`);
+    return res.json();
+  },
+  async getEntities() {
+    const res = await fetch("http://localhost:8000/api/entities");
+    return res.json();
+  },
+  async getCases() {
+    const res = await fetch("http://localhost:8000/api/cases");
+    return res.json();
+  },
+  async getCase(id: string) {
+    const res = await fetch(`http://localhost:8000/api/cases/${id}`);
+    return res.json();
+  },
+  async createCase(newCase: CaseRecord): Promise<CaseRecord> {
+    const res = await fetch("http://localhost:8000/api/cases", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newCase),
+    });
+    return res.json();
+  },
   async getRecentQueries() { return delay(queries); },
   async getAuditLog() { return delay(audit); },
-  async getIngestionJobs() { return delay(ingestion); },
   async submitQuery(query: string): Promise<QueryResult> {
-    return delay({ ...queries[0], id: "Q-" + Math.floor(Math.random() * 9000 + 1000), query, generatedAt: new Date().toISOString() }, 600);
+    const res = await fetch("http://localhost:8000/api/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    return res.json();
   },
-  async uploadDocument(filename: string): Promise<IngestionJob> {
-    return delay({ id: "J-" + Math.floor(Math.random() * 9000), filename, language: "en", size: "—", stage: "queued", progress: 0, startedAt: new Date().toISOString() });
+  async uploadDocument(file: File): Promise<IngestionJob> {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch("http://localhost:8000/api/ingest", {
+      method: "POST",
+      body: formData,
+    });
+    return res.json();
+  },
+  async getIngestionJobs() {
+    const res = await fetch("http://localhost:8000/api/ingestion-jobs");
+    return res.json();
   },
 };
 

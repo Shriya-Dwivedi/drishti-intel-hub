@@ -1,6 +1,6 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { ShieldCheck, Database, Search, Network, Briefcase, Upload, Settings, LogOut, Globe2, WifiOff } from "lucide-react";
+import { ShieldCheck, Database, Search, Network, Briefcase, Upload, Settings, LogOut, Globe2 } from "lucide-react";
 import { LANGUAGES } from "@/services/api";
 
 const NAV = [
@@ -45,9 +45,6 @@ export function AppShell() {
             })}
           </div>
           <div className="ml-auto flex items-center gap-3">
-            <span className="hidden sm:inline-flex items-center gap-2 text-[11px] uppercase tracking-wider px-2.5 py-1 rounded-sm bg-success/15 text-success border border-success/30">
-              <WifiOff className="h-3 w-3" /> 0 external calls — offline
-            </span>
             <select
               aria-label="Interface language"
               value={uiLang}

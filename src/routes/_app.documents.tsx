@@ -53,7 +53,7 @@ function DocumentsPage() {
                       <div className="flex-1 min-w-0">
                         <div className={`text-sm text-foreground truncate ${scriptFontClass(d.language)}`}>{d.title}</div>
                         <div className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-2">
-                          <span className="px-1.5 border border-border rounded-sm">{meta.name}</span>
+                          <span className="px-1.5 border border-border rounded-sm">{meta?.name ?? d.language}</span>
                           <span>· {d.sourceType}</span>
                           <span>· {d.date}</span>
                         </div>
@@ -75,24 +75,10 @@ function DocumentsPage() {
 }
 
 function DocView({ doc }: { doc: DocumentRecord }) {
-  const meta = LANGUAGES.find((l) => l.code === doc.language)!;
-  // Synthetic entity overlay
-  const tagged: Array<{ text: string; type?: keyof typeof ENTITY_COLORS }> = [
-    { text: "Cross-source synthesis identifies " },
-    { text: "A. Mehrotra", type: "person" },
-    { text: ", a procurement broker, coordinating a Dubai-routed channel referenced in " },
-    { text: "Islamabad", type: "location" },
-    { text: " meeting minutes on " },
-    { text: "5 February 2025", type: "date" },
-    { text: ". Vessels held by " },
-    { text: "Crescent Maritime LLC", type: "org" },
-    { text: " are tied to the same broker, with anomalies first surfaced in case file " },
-    { text: "C-204", type: "org" },
-    { text: "." },
-  ];
+  const meta = LANGUAGES.find((l) => l.code === doc.language);
   return (
     <article className="p-6 sm:p-8">
-      <div className="text-[11px] uppercase tracking-wider text-accent">{doc.id} · {meta.name} · {doc.sourceType}</div>
+      <div className="text-[11px] uppercase tracking-wider text-accent">{doc.id} · {meta?.name ?? doc.language} · {doc.sourceType}</div>
       <h2 className={`font-serif text-2xl text-primary mt-1 ${scriptFontClass(doc.language)}`}>{doc.title}</h2>
       <div className="text-xs text-muted-foreground mt-1">{doc.pages} pages · captured {doc.date} · ingested {new Date(doc.ingested).toLocaleString()}</div>
 
@@ -103,14 +89,20 @@ function DocView({ doc }: { doc: DocumentRecord }) {
         ))}
       </div>
 
-      <p className="mt-5 text-[15px] leading-relaxed">
-        {tagged.map((t, i) => t.type
-          ? <mark key={i} className={`px-1 rounded-sm ${ENTITY_COLORS[t.type]} bg-transparent`}>{t.text}</mark>
-          : <span key={i}>{t.text}</span>)}
-      </p>
+      <div className="mt-5">
+  {doc.summary ? (
+    <ul className="space-y-2 list-disc list-outside pl-5 text-[15px] leading-relaxed">
+      {doc.summary.split("\n").filter(Boolean).map((point, i) => (
+        <li key={i}>{point}</li>
+      ))}
+    </ul>
+  ) : (
+    <p className="text-[15px] leading-relaxed text-muted-foreground">{doc.excerpt || "No summary available for this document."}</p>
+  )}
+</div>
       {doc.excerptOriginal && (
         <p className={`mt-4 text-[15px] leading-relaxed border-l-2 border-accent pl-3 text-foreground/80 ${scriptFontClass(doc.language)}`}
-           dir={meta.script === "arabic" ? "rtl" : "ltr"}>
+           dir={meta?.script === "arabic" ? "rtl" : "ltr"}>
           {doc.excerptOriginal}
         </p>
       )}

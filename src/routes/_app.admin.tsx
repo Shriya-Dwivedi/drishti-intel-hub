@@ -28,14 +28,25 @@ function AdminPage() {
           onDrop={(e) => {
             e.preventDefault(); setDrag(false);
             const files = Array.from(e.dataTransfer.files);
-            Promise.all(files.map((f) => api.uploadDocument(f.name))).then((newJobs) => setJobs((j) => [...newJobs, ...j]));
+            Promise.all(files.map((f) => api.uploadDocument(f))).then((newJobs) => setJobs((j) => [...newJobs, ...j]));
           }}
           className={`border-2 border-dashed rounded-sm p-10 text-center transition-colors ${drag ? "border-accent bg-accent/5" : "border-border bg-card"}`}
         >
           <UploadCloud className="h-10 w-10 mx-auto text-muted-foreground" />
           <div className="font-serif text-lg text-primary mt-3">Drop documents to ingest</div>
           <p className="text-sm text-muted-foreground mt-1">Supports PDF, DOCX, TIFF, TXT. Multilingual OCR runs automatically.</p>
-          <button className="mt-4 inline-flex bg-primary text-primary-foreground px-4 py-2 rounded-sm text-sm hover:bg-primary/90">Choose files</button>
+          <input
+            type="file"
+            id="file-input"
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              Promise.all(files.map((f) => api.uploadDocument(f))).then((newJobs) => setJobs((j) => [...newJobs, ...j]));
+            }}
+          />
+          <label htmlFor="file-input" className="mt-4 inline-flex bg-primary text-primary-foreground px-4 py-2 rounded-sm text-sm hover:bg-primary/90 cursor-pointer">
+            Choose files
+          </label>
         </div>
 
         <div className="bg-card border border-border rounded-sm">

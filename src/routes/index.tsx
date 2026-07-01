@@ -11,7 +11,35 @@ export const Route = createFileRoute("/")({
 function LoginPage() {
   const navigate = useNavigate();
   const [role, setRole] = useState<"analyst" | "admin">("analyst");
-  const [user, setUser] = useState("analyst.rao");
+  const [user, setUser] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("http://localhost:8000/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: user, password }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        localStorage.setItem("drishti_user", data.username);
+        localStorage.setItem("drishti_role", data.role);
+        navigate({ to: "/dashboard" });
+      } else {
+        setError(data.message || "Invalid credentials");
+      }
+    } catch (err) {
+      setError("Could not reach backend. Is it running?");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-paper">
@@ -43,10 +71,7 @@ function LoginPage() {
 
         <div className="flex flex-col">
           <div className="flex-1 flex items-center justify-center px-6 py-12">
-            <form
-              onSubmit={(e) => { e.preventDefault(); navigate({ to: "/dashboard" }); }}
-              className="w-full max-w-sm"
-            >
+            <form onSubmit={handleLogin} className="w-full max-w-sm">
               <div className="lg:hidden flex items-center gap-3 mb-8">
                 <RadarMark className="h-9 w-9 text-primary" />
                 <div className="font-serif text-2xl text-primary">Drishti</div>
@@ -66,7 +91,12 @@ function LoginPage() {
                 </div>
                 <div>
                   <label className="text-xs uppercase tracking-wider text-muted-foreground">Passphrase</label>
-                  <input type="password" defaultValue="••••••••••••" className="mt-1 w-full bg-card border border-input rounded-sm px-3 py-2.5 text-sm focus:border-accent outline-none" />
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="mt-1 w-full bg-card border border-input rounded-sm px-3 py-2.5 text-sm focus:border-accent outline-none"
+                  />
                 </div>
 
                 <div>
@@ -81,8 +111,10 @@ function LoginPage() {
                   </div>
                 </div>
 
-                <button type="submit" className="w-full mt-2 bg-primary text-primary-foreground py-2.5 rounded-sm text-sm font-medium hover:bg-primary/90 flex items-center justify-center gap-2">
-                  <ShieldCheck className="h-4 w-4" /> Enter workbench
+                {error && <p className="text-sm text-destructive">{error}</p>}
+
+                <button type="submit" disabled={loading} className="w-full mt-2 bg-primary text-primary-foreground py-2.5 rounded-sm text-sm font-medium hover:bg-primary/90 flex items-center justify-center gap-2 disabled:opacity-60">
+                  <ShieldCheck className="h-4 w-4" /> {loading ? "Signing in…" : "Enter workbench"}
                 </button>
               </div>
 
