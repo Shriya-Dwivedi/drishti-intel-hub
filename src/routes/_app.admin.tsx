@@ -15,7 +15,13 @@ function AdminPage() {
   const [jobs, setJobs] = useState<IngestionJob[]>([]);
   const [drag, setDrag] = useState(false);
 
-  useEffect(() => { api.getIngestionJobs().then(setJobs); }, []);
+  useEffect(() => {
+  api.getIngestionJobs().then(setJobs);
+  const interval = setInterval(() => {
+    api.getIngestionJobs().then(setJobs);
+  }, 2000);
+  return () => clearInterval(interval);
+  }, []);
 
   return (
     <>
