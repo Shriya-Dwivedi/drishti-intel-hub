@@ -1,9 +1,29 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { CaseFileCard } from "@/components/CaseFileCard";
-import { api, detectLanguage, LANGUAGES, scriptFontClass, type QueryResult } from "@/services/api";
+import { api, detectLanguage, LANGUAGES, scriptFontClass, type DocumentRecord, type QueryResult } from "@/services/api";
 import { Search, Loader2 } from "lucide-react";
+
+const DEFAULT_QUERY = "Who is the broker referenced as A.M. and what channels are described?";
+const QUERY_TEXT_KEY = "drishti_last_query_text";
+const QUERY_RESULT_KEY = "drishti_last_query_result";
+
+function readStoredQuery(): string {
+  if (typeof window === "undefined") return DEFAULT_QUERY;
+  return localStorage.getItem(QUERY_TEXT_KEY) ?? DEFAULT_QUERY;
+}
+
+function readStoredResult(): QueryResult | null {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(QUERY_RESULT_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as QueryResult;
+  } catch {
+    return null;
+  }
+}
 
 export const Route = createFileRoute("/_app/query")({
   head: () => ({ meta: [{ title: "Query console — Drishti" }] }),
@@ -11,15 +31,32 @@ export const Route = createFileRoute("/_app/query")({
 });
 
 function QueryConsole() {
-  const [query, setQuery] = useState("Who is the broker referenced as A.M. and what channels are described?");
+  const [query, setQuery] = useState(readStoredQuery);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<QueryResult | null>(null);
+  const [result, setResult] = useState<QueryResult | null>(readStoredResult);
+  const [docs, setDocs] = useState<DocumentRecord[]>([]);
+  const [selectedDoc, setSelectedDoc] = useState<string>("all");
+
+  useEffect(() => {
+    api.getDocuments().then(setDocs);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(QUERY_TEXT_KEY, query);
+  }, [query]);
+
+  useEffect(() => {
+    if (result) {
+      localStorage.setItem(QUERY_RESULT_KEY, JSON.stringify(result));
+    }
+  }, [result]);
 
   async function run(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
     setLoading(true);
-    const r = await api.submitQuery(query);
+    const docId = selectedDoc === "all" ? undefined : selectedDoc;
+    const r = await api.submitQuery(query, docId);
     setResult(r);
     setLoading(false);
   }
@@ -27,7 +64,6 @@ function QueryConsole() {
   const detected = result?.detectedLanguage ?? detectLanguage(query);
   const meta = LANGUAGES.find((l) => l.code === detected)!;
 
-  // Inject citation links into the answer
   const renderAnswer = (answer: string) =>
     answer.split(/(\[\d+\])/g).map((part, i) => {
       const m = part.match(/^\[(\d+)\]$/);
@@ -40,7 +76,20 @@ function QueryConsole() {
       <PageHeader eyebrow="Retrieval" title="Query console" description="Ask in any indexed language. The corpus answer is grounded in cited source documents." />
       <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-8 space-y-6">
 
-        <form onSubmit={run} className="bg-card border border-border rounded-sm p-4">
+        <form onSubmit={run} className="bg-card border border-border rounded-sm p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <label className="text-xs uppercase tracking-wider text-muted-foreground shrink-0">Document:</label>
+            <select
+              value={selectedDoc}
+              onChange={(e) => setSelectedDoc(e.target.value)}
+              className="text-sm border border-border bg-card rounded-sm px-3 py-1.5 flex-1 min-w-0"
+            >
+              <option value="all">Search all documents</option>
+              {docs.map((d) => (
+                <option key={d.id} value={d.id}>{d.title}</option>
+              ))}
+            </select>
+          </div>
           <textarea
             value={query}
             onChange={(e) => setQuery(e.target.value)}

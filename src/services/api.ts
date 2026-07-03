@@ -225,8 +225,11 @@ export const api = {
     const res = await fetch(`http://localhost:8000/api/documents/${id}`);
     return res.json();
   },
-  async getEntities() {
-    const res = await fetch("http://localhost:8000/api/entities");
+  async getEntities(documentId?: string) {
+    const url = documentId
+      ? `http://localhost:8000/api/entities?document_id=${encodeURIComponent(documentId)}`
+      : "http://localhost:8000/api/entities";
+    const res = await fetch(url);
     return res.json();
   },
   async getCases() {
@@ -247,11 +250,13 @@ export const api = {
   },
   async getRecentQueries() { return delay(queries); },
   async getAuditLog() { return delay(audit); },
-  async submitQuery(query: string): Promise<QueryResult> {
+  async submitQuery(query: string, documentId?: string): Promise<QueryResult> {
+    const body: { query: string; document_id?: string } = { query };
+    if (documentId) body.document_id = documentId;
     const res = await fetch("http://localhost:8000/api/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify(body),
     });
     return res.json();
   },

@@ -12,6 +12,9 @@ from langdetect import detect
 import spacy
 from datetime import datetime
 
+import db as database
+import ml_engine
+
 nlp = spacy.load("en_core_web_sm")
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
@@ -28,7 +31,6 @@ app.add_middleware(
 # ---- storage ----
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-ingestion_jobs = []
 
 # ---- models ----
 class DocumentRecord(BaseModel):
@@ -42,10 +44,6 @@ class DocumentRecord(BaseModel):
     summary: str = ""
     excerptOriginal: Optional[str] = None
     pages: int
-
-documents_db: List[DocumentRecord] = []
-entities_db = []
-edges_db = []
 
 class QuerySources(BaseModel):
     documentId: str
@@ -82,10 +80,18 @@ class CaseRecord(BaseModel):
     queries: List[str] = []
     findings: List[str] = []
 
-cases_db: List[CaseRecord] = []
-
 class QueryRequest(BaseModel):
     query: str
+    document_id: Optional[str] = None
+
+_store = database.load_store()
+documents_db: List[DocumentRecord] = [DocumentRecord(**d) for d in _store.get("documents", [])]
+entities_db = _store.get("entities", [])
+edges_db = _store.get("edges", [])
+ingestion_jobs = _store.get("ingestion_jobs", [])
+cases_db: List[CaseRecord] = [CaseRecord(**c) for c in _store.get("cases", [])]
+
+FULL_TEXT_ROUTE_THRESHOLD = 8000
 
 # ---- helpers ----
 def extract_text_from_pdf(path: str) -> str:
@@ -133,32 +139,69 @@ def compute_edges(entities: list):
             })
     return edges
 
-def generate_summary(text: str, max_points: int = 4) -> str:
+def get_document_full_text(document_id: str) -> Optional[dict]:
+    text = None
+    for job in ingestion_jobs:
+        if job.get("id") == document_id:
+            text = job.get("extractedText")
+            break
     if not text:
-        return "No text could be extracted from this document."
+        return None
 
-    # Clean up messy whitespace/line breaks from PDF/OCR extraction
-    cleaned = re.sub(r'\s+', ' ', text.strip())
+    title = None
+    for doc in documents_db:
+        if doc.id == document_id:
+            title = doc.title
+            break
+    if title is None:
+        return None
 
-    # Split into sentences
-    sentences = re.split(r'(?<=[.!?])\s+', cleaned)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 25]
+    return {"text": text, "title": title}
 
-    if not sentences:
-        return cleaned[:400]
+def process_document(job_id: str, filename: str, text: str, lang: str) -> dict:
+    job = {
+        "id": job_id,
+        "filename": filename,
+        "language": lang,
+        "stage": "indexed" if text else "failed",
+        "progress": 100 if text else 0,
+        "extractedText": text,
+        "textLength": len(text),
+    }
+    ingestion_jobs.append(job)
 
-    # Pick the most informative sentences: prioritize longer, information-dense ones
-    ranked = sorted(sentences, key=len, reverse=True)[:max_points]
+    doc = DocumentRecord(
+        id=job_id,
+        title=filename,
+        language=lang,
+        sourceType="report",
+        date="2026-07-01",
+        ingested=datetime.utcnow().isoformat() + "Z",
+        excerpt=text[:300] if text else "(no text extracted)",
+        summary=ml_engine.generate_summary(text),
+        pages=1,
+    )
+    documents_db.append(doc)
 
-    points = []
-    for s in ranked:
-        s = s.strip()
-        if not s.endswith((".", "!", "?")):
-            s += "."
-        s = s[0].upper() + s[1:] if s else s
-        points.append(s)
+    new_entities = extract_entities(text)
+    for ent in new_entities:
+        ent["documentId"] = job_id
+    entities_db.extend(new_entities)
 
-    return "\n".join(points)
+    new_edges = compute_edges(new_entities)
+    for edge in new_edges:
+        edge["documentId"] = job_id
+    edges_db.extend(new_edges)
+
+    if text:
+        ml_engine.index_document(job_id, text, filename, lang)
+
+    database.save_item("documents", [d.model_dump() for d in documents_db])
+    database.save_item("entities", entities_db)
+    database.save_item("edges", edges_db)
+    database.save_item("ingestion_jobs", ingestion_jobs)
+
+    return job
 
 # ---- routes ----
 @app.get("/")
@@ -229,43 +272,24 @@ async def ingest_document(file: UploadFile = File(...)):
     except Exception:
         lang = "unknown"
 
-    job = {
-        "id": job_id,
-        "filename": file.filename,
-        "language": lang,
-        "stage": "indexed" if text else "failed",
-        "progress": 100 if text else 0,
-        "extractedText": text,
-        "textLength": len(text),
-    }
-    ingestion_jobs.append(job)
-
-    doc = DocumentRecord(
-        id=job_id,
-        title=file.filename,
-        language=lang,
-        sourceType="report",
-        date="2026-07-01",
-        ingested="2026-07-01T00:00:00Z",
-        excerpt=text[:300] if text else "(no text extracted)",
-        summary=generate_summary(text),
-        pages=1,
-    )
-    documents_db.append(doc)
-
-    new_entities = extract_entities(text)
-    entities_db.extend(new_entities)
-    new_edges = compute_edges(new_entities)
-    edges_db.extend(new_edges)
-
-    return job
+    return process_document(job_id, file.filename, text, lang)
 
 @app.get("/api/ingestion-jobs")
 def get_ingestion_jobs():
     return ingestion_jobs
 
 @app.get("/api/entities")
-def get_entities():
+def get_entities(document_id: Optional[str] = None):
+    if document_id:
+        filtered_entities = [e for e in entities_db if e.get("documentId") == document_id]
+        entity_ids = {e["id"] for e in filtered_entities}
+        filtered_edges = [
+            e for e in edges_db
+            if e.get("documentId") == document_id
+            and e.get("from") in entity_ids
+            and e.get("to") in entity_ids
+        ]
+        return {"entities": filtered_entities, "edges": filtered_edges}
     return {"entities": entities_db, "edges": edges_db}
 
 @app.get("/api/cases", response_model=List[CaseRecord])
@@ -282,6 +306,7 @@ def get_case(case_id: str):
 @app.post("/api/cases", response_model=CaseRecord)
 def create_case(case: CaseRecord):
     cases_db.append(case)
+    database.save_item("cases", [c.model_dump() for c in cases_db])
     return case
 
 @app.post("/api/login")
@@ -293,38 +318,64 @@ def login(payload: LoginRequest):
 @app.post("/api/query", response_model=QueryResult)
 def run_query(payload: QueryRequest):
     query_text = payload.query
-    query_lower = query_text.lower()
-
-    matches = []
-    for doc in documents_db:
-        job = next((j for j in ingestion_jobs if j["id"] == doc.id), None)
-        full_text = job["extractedText"] if job else doc.excerpt
-        if query_lower and any(word in full_text.lower() for word in query_lower.split()):
-            idx = full_text.lower().find(query_lower.split()[0])
-            start = max(0, idx - 100)
-            snippet = full_text[start:start + 300]
-            matches.append(QuerySources(
-                documentId=doc.id,
-                documentTitle=doc.title,
-                snippet=snippet,
-                language=doc.language,
-            ))
-
-    if matches:
-        answer = f"Found {len(matches)} matching document(s) referencing your query. Review the sources below for exact context."
-    else:
-        answer = "No matching passages found in the ingested corpus for this query."
 
     try:
         detected_lang = detect(query_text) if query_text else "en"
     except Exception:
         detected_lang = "en"
 
+    if payload.document_id:
+        doc_data = get_document_full_text(payload.document_id)
+        if doc_data and len(doc_data["text"]) < FULL_TEXT_ROUTE_THRESHOLD:
+            doc_record = next((d for d in documents_db if d.id == payload.document_id), None)
+            answer = ml_engine.generate_answer_from_full_text(
+                query_text,
+                doc_data["text"],
+                doc_data["title"],
+            )
+            matches = [
+                QuerySources(
+                    documentId=payload.document_id,
+                    documentTitle=doc_data["title"],
+                    snippet=doc_data["text"][:400],
+                    language=doc_record.language if doc_record else detected_lang,
+                    confidence=1.0,
+                    page=1,
+                )
+            ]
+            return QueryResult(
+                id="Q-" + uuid.uuid4().hex[:6],
+                query=query_text,
+                detectedLanguage=detected_lang,
+                answer=answer,
+                sources=matches,
+                generatedAt=datetime.utcnow().isoformat() + "Z",
+            )
+
+    raw_matches = ml_engine.semantic_search(
+        query_text,
+        top_k=2,
+        document_id=payload.document_id,
+    )
+    matches = [
+        QuerySources(
+            documentId=m["documentId"],
+            documentTitle=m["documentTitle"],
+            snippet=m["snippet"],
+            language=m["language"],
+            confidence=m["confidence"],
+            page=m.get("page", 1),
+        )
+        for m in raw_matches
+    ]
+
+    answer = ml_engine.generate_rag_answer(query_text, raw_matches)
+
     return QueryResult(
         id="Q-" + uuid.uuid4().hex[:6],
         query=query_text,
         detectedLanguage=detected_lang,
         answer=answer,
-        sources=matches[:5],
+        sources=matches,
         generatedAt=datetime.utcnow().isoformat() + "Z",
     )

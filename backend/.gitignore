@@ -2,4 +2,6 @@ venv/
 __pycache__/
 *.pyc
 uploads/
+data/
+chroma_db/
 .env
