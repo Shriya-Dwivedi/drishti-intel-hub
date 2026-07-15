@@ -217,8 +217,14 @@ export const api = {
     const res = await fetch("http://localhost:8000/api/corpus-stats");
     return res.json();
   },
-  async getDocuments() {
+  async getDocuments(): Promise<DocumentRecord[]> {
     const res = await fetch("http://localhost:8000/api/documents");
+    return res.json();
+  },
+  async deleteDocument(id: string) {
+    const res = await fetch(`http://localhost:8000/api/documents/${id}`, {
+      method: "DELETE",
+    });
     return res.json();
   },
   async getDocument(id: string) {

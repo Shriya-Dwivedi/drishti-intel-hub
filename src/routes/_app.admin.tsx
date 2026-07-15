@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { api, type IngestionJob } from "@/services/api";
-import { UploadCloud } from "lucide-react";
+import { UploadCloud, Loader2 } from "lucide-react";
 
 const STAGES = ["queued", "ocr", "embedding", "indexed"] as const;
 
@@ -14,19 +14,53 @@ export const Route = createFileRoute("/_app/admin")({
 function AdminPage() {
   const [jobs, setJobs] = useState<IngestionJob[]>([]);
   const [drag, setDrag] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadingFilenames, setUploadingFilenames] = useState<string[]>([]);
 
   useEffect(() => {
-  api.getIngestionJobs().then(setJobs);
-  const interval = setInterval(() => {
     api.getIngestionJobs().then(setJobs);
-  }, 2000);
-  return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      api.getIngestionJobs().then(setJobs);
+    }, 2000);
+    return () => clearInterval(interval);
   }, []);
+
+  const handleUpload = (files: File[]) => {
+    if (files.length === 0) return;
+    setUploading(true);
+    setUploadingFilenames(files.map((f) => f.name));
+
+    Promise.all(files.map((f) => api.uploadDocument(f)))
+      .then((newJobs) => {
+        setJobs((j) => [...newJobs, ...j]);
+      })
+      .catch(() => {
+        alert("Upload failed. Please check the backend connection and try again.");
+      })
+      .finally(() => {
+        setUploading(false);
+        setUploadingFilenames([]);
+      });
+  };
 
   return (
     <>
       <PageHeader eyebrow="Administration" title="Ingestion pipeline" description="Upload documents and monitor OCR, embedding, and indexing stages." />
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+
+        {uploading && (
+          <div className="bg-accent/10 border border-accent/40 rounded-sm p-4 flex items-center gap-3">
+            <Loader2 className="h-5 w-5 text-accent animate-spin shrink-0" />
+            <div>
+              <div className="text-sm font-medium text-primary">
+                Uploading and processing {uploadingFilenames.length > 1 ? `${uploadingFilenames.length} documents` : uploadingFilenames[0]}…
+              </div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Larger documents can take a minute or more (OCR, entity extraction, and indexing all run before this finishes). Please don't close this tab.
+              </div>
+            </div>
+          </div>
+        )}
 
         <div
           onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
@@ -34,9 +68,9 @@ function AdminPage() {
           onDrop={(e) => {
             e.preventDefault(); setDrag(false);
             const files = Array.from(e.dataTransfer.files);
-            Promise.all(files.map((f) => api.uploadDocument(f))).then((newJobs) => setJobs((j) => [...newJobs, ...j]));
+            handleUpload(files);
           }}
-          className={`border-2 border-dashed rounded-sm p-10 text-center transition-colors ${drag ? "border-accent bg-accent/5" : "border-border bg-card"}`}
+          className={`border-2 border-dashed rounded-sm p-10 text-center transition-colors ${drag ? "border-accent bg-accent/5" : "border-border bg-card"} ${uploading ? "opacity-60 pointer-events-none" : ""}`}
         >
           <UploadCloud className="h-10 w-10 mx-auto text-muted-foreground" />
           <div className="font-serif text-lg text-primary mt-3">Drop documents to ingest</div>
@@ -45,13 +79,15 @@ function AdminPage() {
             type="file"
             id="file-input"
             className="hidden"
+            disabled={uploading}
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);
-              Promise.all(files.map((f) => api.uploadDocument(f))).then((newJobs) => setJobs((j) => [...newJobs, ...j]));
+              handleUpload(files);
+              e.target.value = "";
             }}
           />
-          <label htmlFor="file-input" className="mt-4 inline-flex bg-primary text-primary-foreground px-4 py-2 rounded-sm text-sm hover:bg-primary/90 cursor-pointer">
-            Choose files
+          <label htmlFor="file-input" className={`mt-4 inline-flex bg-primary text-primary-foreground px-4 py-2 rounded-sm text-sm hover:bg-primary/90 cursor-pointer ${uploading ? "pointer-events-none" : ""}`}>
+            {uploading ? "Uploading…" : "Choose files"}
           </label>
         </div>
 

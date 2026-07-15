@@ -3,16 +3,19 @@ import re
 from typing import Any, Dict, List, Optional
 
 import chromadb
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+import requests
 from sentence_transformers import SentenceTransformer
 
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = "llama3.2:1b"
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = "gemini-2.5-flash"
-
+GEMINI_MODEL = "gemini-1.5-flash"
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 CONFIDENCE_THRESHOLD = 0.35
 SNIPPET_MAX_CHARS = 400
-FULL_TEXT_MAX_CHARS = 150000
+FULL_TEXT_MAX_CHARS = 100000
 
 print("Loading ML models (LaBSE + ChromaDB)…")
 _embedder = SentenceTransformer("sentence-transformers/LaBSE")
@@ -37,18 +40,38 @@ def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str
     return chunks
 
 
-def _gemini_generate(prompt: str, max_output_tokens: int = 800, temperature: float = 0) -> str:
+def _ollama_generate(
+    prompt: str,
+    num_predict: int = 80,
+    num_ctx: int = 768,
+    temperature: Optional[float] = None,
+) -> str:
+    options: Dict[str, Any] = {"num_predict": num_predict, "num_ctx": num_ctx}
+    if temperature is not None:
+        options["temperature"] = temperature
+    resp = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": options,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json().get("response", "").strip()
+
+
+def _gemini_generate(prompt: str, max_output_tokens: int = 200, temperature: float = 0) -> str:
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not set. Add it to your .env file or environment variables.")
-
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
+    model = genai.GenerativeModel(GEMINI_MODEL)
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.types.GenerationConfig(
             max_output_tokens=max_output_tokens,
             temperature=temperature,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
     return (response.text or "").strip()
@@ -69,6 +92,7 @@ def index_document(
         _collection.delete(ids=existing["ids"])
 
     ids = []
+    embeddings = []
     metadatas = []
     documents = []
 
@@ -138,30 +162,26 @@ def semantic_search(
     return matches
 
 
-def generate_answer_from_full_text(query_text: str, document_text: str, document_title: str) -> str:
-    if not GEMINI_API_KEY:
-        return "Error: GEMINI_API_KEY environment variable is not set."
-
+def generate_answer_from_full_text(query: str, document_text: str, document_title: str) -> str:
     truncated = document_text[:FULL_TEXT_MAX_CHARS]
-
-    prompt = f"""You are a helpful assistant answering questions about a document titled '{document_title}'. Read the full document text below carefully.
-
-Answer the user's question thoroughly and in your own words, based on what the document says — even if the question is phrased differently than the document's wording. Interpret the intent of the question, not just exact keyword matches. Give a complete answer with relevant detail, not just a short fragment.
-
-Only say the information isn't in the document if you're genuinely confident it's absent after considering the full text.
-
-Document Text:
-{truncated}
-
-Question:
-{query_text}
-
-Answer:"""
+    prompt = (
+        "You are a document Q&A assistant. Answer the question using ONLY the document text below.\n"
+        "Do not use outside knowledge. Do not guess or invent facts.\n"
+        'If the answer is not explicitly stated in the document, respond with exactly:\n'
+        '"The document does not contain information to answer this question."\n\n'
+        f"Document: {document_title}\n\n"
+        f"{truncated}\n\n"
+        f"Question: {query}\n\n"
+        "Answer:"
+    )
 
     try:
-        return _gemini_generate(prompt, max_output_tokens=1000, temperature=0.2)
+        return _gemini_generate(prompt, max_output_tokens=200, temperature=0)
     except Exception as e:
-        return f"Error connecting to Gemini API: {str(e)}"
+        import traceback
+        traceback.print_exc()
+        return f"DEBUG ERROR: {type(e).__name__}: {str(e)}"
+
 
 def generate_rag_answer(query_text: str, matches: List[Dict[str, Any]]) -> str:
     if not matches:
@@ -174,45 +194,43 @@ def generate_rag_answer(query_text: str, matches: List[Dict[str, Any]]) -> str:
         context_parts.append(f"[{i}] ({title}): {snippet}")
 
     context = "\n\n".join(context_parts)
-    prompt = f"""Answer the user's question thoroughly and in your own words, based on the excerpts below from the document corpus. Interpret the intent of the question even if it's phrased differently than the source text. Cite sources as [1], [2], etc. where relevant. Give a complete, natural answer, not just a short fragment.
-
-Only say the information isn't available if you're genuinely confident none of the excerpts answer the question.
-
-Excerpts:
-{context}
-
-Question: {query_text}
-
-Answer:"""
+    prompt = (
+        "Do not use any outside knowledge, do not guess, and do not expand abbreviations "
+        "using your own training knowledge — only use what is explicitly written in the sources. "
+        "If the sources do not contain the answer, respond exactly: "
+        "'This is not mentioned in the uploaded document.'\n\n"
+        f"Answer the question using ONLY the excerpts below. "
+        f"Cite sources as [1], [2], etc.\n\n"
+        f"Excerpts:\n{context}\n\n"
+        f"Question: {query_text}\n\n"
+        f"Answer:"
+    )
 
     try:
-        return _gemini_generate(prompt, max_output_tokens=800, temperature=0.2)
+        return _gemini_generate(prompt, max_output_tokens=150, temperature=0)
     except Exception:
         return (
             f"Found {len(matches)} relevant passage(s). "
             "Review the cited sources below for exact context."
         )
 
-    
+
 def generate_summary(text: str, max_points: int = 4) -> str:
     if not text:
         return "No text could be extracted from this document."
 
-    cleaned = re.sub(r"\s+", " ", text.strip())[:3000]
+    cleaned = re.sub(r"\s+", " ", text.strip())[:2000]
     prompt = (
-        f"You are summarizing an academic project report. Write a neutral, factual summary "
-        f"in exactly {max_points} concise bullet points. One point per line, no numbering prefix. "
-        f"Do not mention weapons, threats, or anything sensitive — treat this as a routine "
-        f"technical software project report.\n\n{cleaned}\n\nSummary:"
+        f"Summarize the following document in {max_points} concise bullet points. "
+        f"One point per line, no numbering prefix.\n\n{cleaned}\n\nSummary:"
     )
 
     try:
-        summary = _gemini_generate(prompt, max_output_tokens=500, temperature=0.3)
-        if summary and len(summary) > 30:
+        summary = _gemini_generate(prompt, max_output_tokens=200, temperature=0.3)
+        if summary:
             return summary
-        print(f"GEMINI SUMMARY TOO SHORT: '{summary}'")
-    except Exception as e:
-        print(f"GEMINI SUMMARY ERROR: {type(e).__name__}: {str(e)}")
+    except Exception:
+        pass
 
     sentences = re.split(r"(?<=[.!?])\s+", cleaned)
     sentences = [s.strip() for s in sentences if len(s.strip()) > 25]

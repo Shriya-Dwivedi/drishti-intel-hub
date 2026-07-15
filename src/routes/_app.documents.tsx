@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { api, LANGUAGES, scriptFontClass, type DocumentRecord } from "@/services/api";
+import { Trash2 } from "lucide-react";
 
 const ENTITY_COLORS: Record<string, string> = {
   person: "bg-[color:var(--entity-person)]/15 text-[color:var(--entity-person)] border border-[color:var(--entity-person)]/40",
@@ -21,7 +22,24 @@ function DocumentsPage() {
   const [type, setType] = useState("all");
   const [active, setActive] = useState<DocumentRecord | null>(null);
 
-  useEffect(() => { api.getDocuments().then((d) => { setDocs(d); setActive(d[0]); }); }, []);
+  const loadDocs = () => {
+    api.getDocuments().then((d) => {
+      setDocs(d);
+      setActive((prev) => {
+  const stillExists = prev ? d.find((x) => x.id === prev.id) : undefined;
+  return stillExists ?? d[0] ?? null;
+});
+    });
+  };
+
+  useEffect(() => { loadDocs(); }, []);
+
+  const handleDelete = async (id: string, title: string) => {
+    const confirmed = window.confirm(`Delete "${title}"? This cannot be undone.`);
+    if (!confirmed) return;
+    await api.deleteDocument(id);
+    loadDocs();
+  };
 
   const filtered = useMemo(() => docs.filter((d) => (lang === "all" || d.language === lang) && (type === "all" || d.sourceType === type)), [docs, lang, type]);
 
@@ -46,8 +64,8 @@ function DocumentsPage() {
               const meta = LANGUAGES.find((l) => l.code === d.language)!;
               const isActive = active?.id === d.id;
               return (
-                <li key={d.id}>
-                  <button onClick={() => setActive(d)} className={`w-full text-left px-4 py-3 hover:bg-muted/50 ${isActive ? "bg-muted/70 border-l-2 border-accent" : ""}`}>
+                <li key={d.id} className={`flex items-center gap-1 ${isActive ? "bg-muted/70 border-l-2 border-accent" : ""}`}>
+                  <button onClick={() => setActive(d)} className="flex-1 text-left px-4 py-3 hover:bg-muted/50 min-w-0">
                     <div className="flex items-start gap-3">
                       <span className="font-mono text-[10px] text-muted-foreground mt-0.5">{d.id}</span>
                       <div className="flex-1 min-w-0">
@@ -60,6 +78,13 @@ function DocumentsPage() {
                       </div>
                     </div>
                   </button>
+                  <button
+                    onClick={() => handleDelete(d.id, d.title)}
+                    title="Delete document"
+                    className="p-2 mr-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-sm"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                 </li>
               );
             })}
@@ -67,20 +92,30 @@ function DocumentsPage() {
         </div>
 
         <div className="bg-card border border-border rounded-sm">
-          {active ? <DocView doc={active} /> : <div className="p-10 text-center text-muted-foreground">Select a document</div>}
+          {active ? <DocView doc={active} onDelete={() => handleDelete(active.id, active.title)} /> : <div className="p-10 text-center text-muted-foreground">Select a document</div>}
         </div>
       </div>
     </>
   );
 }
 
-function DocView({ doc }: { doc: DocumentRecord }) {
+function DocView({ doc, onDelete }: { doc: DocumentRecord; onDelete: () => void }) {
   const meta = LANGUAGES.find((l) => l.code === doc.language);
   return (
     <article className="p-6 sm:p-8">
-      <div className="text-[11px] uppercase tracking-wider text-accent">{doc.id} · {meta?.name ?? doc.language} · {doc.sourceType}</div>
-      <h2 className={`font-serif text-2xl text-primary mt-1 ${scriptFontClass(doc.language)}`}>{doc.title}</h2>
-      <div className="text-xs text-muted-foreground mt-1">{doc.pages} pages · captured {doc.date} · ingested {new Date(doc.ingested).toLocaleString()}</div>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-[11px] uppercase tracking-wider text-accent">{doc.id} · {meta?.name ?? doc.language} · {doc.sourceType}</div>
+          <h2 className={`font-serif text-2xl text-primary mt-1 ${scriptFontClass(doc.language)}`}>{doc.title}</h2>
+          <div className="text-xs text-muted-foreground mt-1">{doc.pages} pages · captured {doc.date} · ingested {new Date(doc.ingested).toLocaleString()}</div>
+        </div>
+        <button
+          onClick={onDelete}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 border border-destructive/40 text-destructive rounded-sm hover:bg-destructive/10 shrink-0"
+        >
+          <Trash2 className="h-3.5 w-3.5" /> Delete
+        </button>
+      </div>
 
       <div className="mt-5 flex flex-wrap items-center gap-2 text-[11px]">
         <span className="text-muted-foreground uppercase tracking-wider">Entities:</span>
@@ -90,16 +125,16 @@ function DocView({ doc }: { doc: DocumentRecord }) {
       </div>
 
       <div className="mt-5">
-  {doc.summary ? (
-    <ul className="space-y-2 list-disc list-outside pl-5 text-[15px] leading-relaxed">
-      {doc.summary.split("\n").filter(Boolean).map((point, i) => (
-        <li key={i}>{point}</li>
-      ))}
-    </ul>
-  ) : (
-    <p className="text-[15px] leading-relaxed text-muted-foreground">{doc.excerpt || "No summary available for this document."}</p>
-  )}
-</div>
+        {doc.summary ? (
+          <ul className="space-y-2 list-disc list-outside pl-5 text-[15px] leading-relaxed">
+            {doc.summary.split("\n").filter(Boolean).map((point, i) => (
+              <li key={i}>{point}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-[15px] leading-relaxed text-muted-foreground">{doc.excerpt || "No summary available for this document."}</p>
+        )}
+      </div>
       {doc.excerptOriginal && (
         <p className={`mt-4 text-[15px] leading-relaxed border-l-2 border-accent pl-3 text-foreground/80 ${scriptFontClass(doc.language)}`}
            dir={meta?.script === "arabic" ? "rtl" : "ltr"}>

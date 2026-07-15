@@ -21,6 +21,7 @@ import ml_engine
 nlp = spacy.load("en_core_web_sm")
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
+# ---- app setup (must come first) ----
 app = FastAPI()
 
 app.add_middleware(
@@ -30,6 +31,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---- storage ----
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -66,6 +68,11 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+USERS_DB = {
+    "admin": "admin123",
+    "analyst": "analyst123",
+}
+
 class CaseRecord(BaseModel):
     id: str
     title: str
@@ -80,12 +87,14 @@ class QueryRequest(BaseModel):
     query: str
     document_id: Optional[str] = None
 
-# ---- load from Supabase at startup ----
-documents_db: List[DocumentRecord] = [DocumentRecord(**d) for d in database.get_all_documents()]
-entities_db = database.get_all_entities()
-edges_db = database.get_all_edges()
-ingestion_jobs = database.get_all_ingestion_jobs()
-cases_db: List[CaseRecord] = [CaseRecord(**c) for c in database.get_all_cases()]
+_store = database.load_store()
+documents_db: List[DocumentRecord] = [DocumentRecord(**d) for d in _store.get("documents", [])]
+entities_db = _store.get("entities", [])
+edges_db = _store.get("edges", [])
+ingestion_jobs = _store.get("ingestion_jobs", [])
+cases_db: List[CaseRecord] = [CaseRecord(**c) for c in _store.get("cases", [])]
+
+FULL_TEXT_ROUTE_THRESHOLD = 8000
 
 # ---- helpers ----
 def extract_text_from_pdf(path: str) -> str:
@@ -107,7 +116,7 @@ def extract_entities(text: str):
     doc = nlp(text[:100000])
     entity_map = {}
     for ent in doc.ents:
-        if ent.label_ not in ["PERSON", "ORG", "GPE", "LOC"]:
+        if ent.label_ not in ["PERSON", "ORG", "GPE", "LOC"]:  # DATE dropped — too noisy
             continue
         name = ent.text.strip()
         if len(name) < 3 or re.match(r'^[\d\W]+$', name):
@@ -126,7 +135,11 @@ def compute_edges(entities: list):
     edges = []
     for i in range(len(entities)):
         for j in range(i + 1, len(entities)):
-            edges.append({"from": entities[i]["id"], "to": entities[j]["id"], "weight": 1})
+            edges.append({
+                "from": entities[i]["id"],
+                "to": entities[j]["id"],
+                "weight": 1,
+            })
     return edges
 
 def get_document_full_text(document_id: str) -> Optional[dict]:
@@ -137,6 +150,7 @@ def get_document_full_text(document_id: str) -> Optional[dict]:
             break
     if not text:
         return None
+
     title = None
     for doc in documents_db:
         if doc.id == document_id:
@@ -144,6 +158,7 @@ def get_document_full_text(document_id: str) -> Optional[dict]:
             break
     if title is None:
         return None
+
     return {"text": text, "title": title}
 
 def process_document(job_id: str, filename: str, text: str, lang: str) -> dict:
@@ -157,7 +172,6 @@ def process_document(job_id: str, filename: str, text: str, lang: str) -> dict:
         "textLength": len(text),
     }
     ingestion_jobs.append(job)
-    database.save_ingestion_job(job)
 
     doc = DocumentRecord(
         id=job_id,
@@ -171,22 +185,24 @@ def process_document(job_id: str, filename: str, text: str, lang: str) -> dict:
         pages=1,
     )
     documents_db.append(doc)
-    database.save_document(doc.model_dump())
 
     new_entities = extract_entities(text)
     for ent in new_entities:
         ent["documentId"] = job_id
     entities_db.extend(new_entities)
-    database.save_entities(new_entities)
 
     new_edges = compute_edges(new_entities)
     for edge in new_edges:
         edge["documentId"] = job_id
     edges_db.extend(new_edges)
-    database.save_edges(new_edges)
 
     if text:
         ml_engine.index_document(job_id, text, filename, lang)
+
+    database.save_item("documents", [d.model_dump() for d in documents_db])
+    database.save_item("entities", entities_db)
+    database.save_item("edges", edges_db)
+    database.save_item("ingestion_jobs", ingestion_jobs)
 
     return job
 
@@ -204,16 +220,16 @@ def get_system_health():
     )
     index_size_gb = round(total_bytes / (1024 ** 3), 4)
     return {
-        "offline": False,
-        "externalCalls": 1,
+        "offline": True,
+        "externalCalls": 0,
         "uptimeHours": 999,
         "indexSizeGB": index_size_gb,
-        "lastIngestion": documents_db[-1].ingested if documents_db else None,
+        "lastIngestion": "2025-02-22T09:30:00Z",
         "services": [
             {"name": "Index", "status": "ok"},
             {"name": "OCR", "status": "ok"},
             {"name": "Embedding", "status": "ok"},
-            {"name": "Translator", "status": "ok"},
+            {"name": "Translator", "status": "degraded"},
         ],
     }
 
@@ -290,46 +306,17 @@ def get_case(case_id: str):
             return c
     return None
 
-@app.delete("/api/documents/{doc_id}")
-def delete_document(doc_id: str):
-    global documents_db, entities_db, edges_db, ingestion_jobs
-
-    documents_db[:] = [d for d in documents_db if d.id != doc_id]
-    entities_db[:] = [e for e in entities_db if e.get("documentId") != doc_id]
-    edges_db[:] = [e for e in edges_db if e.get("documentId") != doc_id]
-    ingestion_jobs[:] = [j for j in ingestion_jobs if j.get("id") != doc_id]
-
-    try:
-        ml_engine._collection.delete(where={"documentId": doc_id})
-    except Exception:
-        pass
-
-    database.delete_document_row(doc_id)
-    database.delete_entities_for_document(doc_id)
-    database.delete_edges_for_document(doc_id)
-    database.delete_ingestion_job(doc_id)
-
-    return {"success": True, "message": f"Document {doc_id} deleted"}
-
 @app.post("/api/cases", response_model=CaseRecord)
 def create_case(case: CaseRecord):
     cases_db.append(case)
-    database.save_case(case.model_dump())
+    database.save_item("cases", [c.model_dump() for c in cases_db])
     return case
 
 @app.post("/api/login")
 def login(payload: LoginRequest):
-    user = database.get_user(payload.username)
-    if user and user["password"] == payload.password:
-        return {"success": True, "username": user["username"], "role": user["role"]}
+    if USERS_DB.get(payload.username) == payload.password:
+        return {"success": True, "username": payload.username, "role": "admin" if payload.username == "admin" else "analyst"}
     return {"success": False, "message": "Invalid username or password"}
-
-@app.post("/api/register")
-def register(payload: LoginRequest):
-    if database.get_user(payload.username):
-        return {"success": False, "message": "Username already exists"}
-    database.create_user(payload.username, payload.password, "analyst")
-    return {"success": True, "message": "User created"}
 
 @app.post("/api/query", response_model=QueryResult)
 def run_query(payload: QueryRequest):
@@ -342,10 +329,12 @@ def run_query(payload: QueryRequest):
 
     if payload.document_id:
         doc_data = get_document_full_text(payload.document_id)
-        if doc_data:
+        if doc_data and len(doc_data["text"]) < FULL_TEXT_ROUTE_THRESHOLD:
             doc_record = next((d for d in documents_db if d.id == payload.document_id), None)
             answer = ml_engine.generate_answer_from_full_text(
-                query_text, doc_data["text"], doc_data["title"],
+                query_text,
+                doc_data["text"],
+                doc_data["title"],
             )
             matches = [
                 QuerySources(
@@ -366,15 +355,23 @@ def run_query(payload: QueryRequest):
                 generatedAt=datetime.utcnow().isoformat() + "Z",
             )
 
-    raw_matches = ml_engine.semantic_search(query_text, top_k=2, document_id=payload.document_id)
+    raw_matches = ml_engine.semantic_search(
+        query_text,
+        top_k=2,
+        document_id=payload.document_id,
+    )
     matches = [
         QuerySources(
-            documentId=m["documentId"], documentTitle=m["documentTitle"],
-            snippet=m["snippet"], language=m["language"],
-            confidence=m["confidence"], page=m.get("page", 1),
+            documentId=m["documentId"],
+            documentTitle=m["documentTitle"],
+            snippet=m["snippet"],
+            language=m["language"],
+            confidence=m["confidence"],
+            page=m.get("page", 1),
         )
         for m in raw_matches
     ]
+
     answer = ml_engine.generate_rag_answer(query_text, raw_matches)
 
     return QueryResult(
